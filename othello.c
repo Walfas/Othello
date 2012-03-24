@@ -8,38 +8,48 @@
 #include <sys/time.h>
 
 #define INVALID -2
-#define EMPTY -1
-#define PLAYER1 0
-#define PLAYER2 1
+#define EMPTY 0
+#define PLAYER1 1
+#define PLAYER2 -1
 
 #define BOARDSIZE 8
-#define INF 65536
+#define INF 2097152
+#define END 1048576
 #define MAXMOVES 32
 #define NUMTILES 64
-#define ARRSIZE 94
+#define ARRSIZE 95
+#define MAXSTRLEN 1024
 
-#define CHR_PLAYER1 '-'
-#define CHR_PLAYER2 '*'
+#define CHR_PLAYER1 '*'
+#define CHR_PLAYER2 '-'
 #define CHR_EMPTY ' '
-#define COL_PLAYER1 "\033[1;32m"
-#define COL_PLAYER2 "\033[1;36m"
-#define COL_EMPTY "\033[0m"
+#define COL_PLAYER1 "\033[1;36m"
+#define COL_PLAYER2 "\033[1;32m"
 #define COL_MOVE "\033[1;33m"
+#define COL_EMPTY "\033[0m"
 
+#define GETPLAYER(x) (((x)==PLAYER1)?1:2)
 #define TURN(x) (x[91])
 #define P1PIECES(x) (x[92])
 #define ACTIVEPIECES(x) (x[93])
-#define COORD(x,y) (10+x+y*9)
+#define JUSTPLAYED(x) (x[94])
+#define COORD(x,y) (10+(x)+(y)*9)
 
 #define TALL 0
 
-time_t starttime, endtime;
-double timelimit;
+struct timeval starttimeval, endtimeval;
+double starttime, endtime, timelimit;
 
-// Remove later
-static jmp_buf jbuf;
-struct itimerval timer;
-sigset_t mask;
+enum {
+	A1 = 10, B1, C1, D1, E1, F1, G1, H1,
+	A2 = 19, B2, C2, D2, E2, F2, G2, H2,
+	A3 = 28, B3, C3, D3, E3, F3, G3, H3,
+	A4 = 37, B4, C4, D4, E4, F4, G4, H4,
+	A5 = 46, B5, C5, D5, E5, F5, G5, H5,
+	A6 = 55, B6, C6, D6, E6, F6, G6, H6,
+	A7 = 64, B7, C7, D7, E7, F7, G7, H7,
+	A8 = 73, B8, C8, D8, E8, F8, G8, H8
+};
 
 /* Parts of this Othello implementation were based on 
 	Gunnar Andersson's endgame solver on his
@@ -48,21 +58,23 @@ sigset_t mask;
    Elements 0-90 of the board array represent the board 
 	as follows:
 
-	ppppppppp
-	p........
-	p........	p is a placeholder position
-	p........	. can be either P1, P2, or blank
-	p........
-	p........
-	p........
-	p........    
-	p........
-	pppppppppp 
+	p p p p p p p p p 
+	p . . . . . . . .
+	p . . . . . . . .	p is a placeholder position (INVALID)
+	p . . . . . . . .	. is either PLAYER1, PLAYER2, or EMPTY
+	p . . . . . . . .
+	p . . . . . . . .
+	p . . . . . . . .
+	p . . . . . . . .
+	p . . . . . . . .
+	p p p p p p p p p p
    
    The array also stores the following info about the game:
 	board[91] = Whose turn is it? (PLAYER1 or PLAYER2)
-	board[92] = # of PLAYER1 pieces
-	board[93] = total pieces	*/
+	board[92] = Number of PLAYER1 pieces
+	board[93] = Total pieces
+	board[94] = The position of the piece that was just played
+*/
 
 /* dirs[] represents the relative positions adjacent to a 
 	given index on board[]. For example, the position directly 
@@ -104,27 +116,57 @@ const int flipdir[91] = {
 /* positions[] is an array of indices, ordered from best to 
 	worst. Evaluating moves in this order may result in better 
 	move ordering for alpha-beta pruning. 	*/
+	
+/*   	A  B  C  D  E  F  G  H
+	1	10 11 12 13 14 15 16 17
+	2	19 20 21 22 23 24 25 26
+	3	28 29 30 31 32 33 34 35
+	4	37 38 39 40 41 42 43 44
+	5	46 47 48 49 50 51 52 53
+	6	55 56 57 58 59 60 61 62
+	7	64 65 66 67 68 69 70 71
+	8	73 74 75 76 77 78 79 80
+*/
+	
 const int positions[64] = {
-	40 , 41 , 49 , 50 , // Center squares
-	10 , 17 , 73 , 80 , // Corners
-	12 , 15 , 28 , 35 , 55 , 62 , 75 , 78 , // Edge (C1)
-	30 , 33 , 57 , 60 , // C3
-	13 , 14 , 37 , 44 , 46 , 53 , 76 , 77 , // Edge (D1)
-	31 , 32 , 39 , 42 , 48 , 51 , 58 , 59 , // D3
-	22 , 23 , 38 , 43 , 47 , 52 , 67 , 68 , // D2
-	21 , 24 , 29 , 34 , 56 , 61 , 66 , 69 , // C2
-	11 , 16 , 19 , 26 , 64 , 71 , 74 , 79 , // C-squares
-	20 , 25 , 65 , 70 , // X-squares
+	A1 , H1 , A8 , H8 , // Corners
+	D4 , E4 , D5 , E5 , // Center squares
+	C1 , F1 , A3 , H3 , A6 , H6 , C8 , F8 , // Edge (C1)
+	C3 , F3 , C6 , F6 , // C3
+	D1 , E1 , A4 , H4 , A5 , H5 , D8 , E8 , // Edge (D1)
+	D3 , E3 , C4 , F4 , C5 , F5 , D6 , E6 , // D3
+	D2 , E2 , B4 , G4 , B5 , G5 , D7 , E7 , // D2
+	C2 , F2 , B3 , G3 , B6 , G6 , C7 , F7 , // C2
+	B1 , G1 , A2 , H2 , A7 , H7 , B8 , G8 , // C-squares
+	B2 , G2 , B7 , G7 , // X-squares
 };
 
-void timeout(int sig);
+#define XV 24
+#define CV 6
+const int disksquare[91] = {
+	0,  0,  0,  0,  0,  0,  0,  0,  0,
+	0,500,-CV,  8,  6,  6,  8,-CV,500,
+	0,-CV,-XV, -4, -3, -3, -4,-XV,-CV,
+	0,  8, -4,  7,  2,  2,  7, -4,  8,
+	0,  6, -3,  2,  5,  5,  2, -3,  6,
+	0,  6, -3,  2,  5,  5,  2, -3,  6,
+	0,  8, -4,  7,  2,  2,  7, -4,  8,
+	0,-CV,-XV, -4, -3, -3, -4,-XV,-CV,
+	0,500,-CV,  8,  6,  6,  8,-CV,500,
+	0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+};
+
 int decidemove(int *board);
 int negamax(int d, int maxd, int *board, int alpha, int beta);
 int terminaltest(int *board);
 void results(int *board, int move);
 int evaluation(int *board);
-int h_score(int *board);
+int h_discdiff(int *board);
 int h_mobility(int *board);
+int h_pmobility(int *board);
+int h_disksquare(int *board);
+int h_stability(int *board);
+int h_straightlines(int *board);
 void getmoves(int *board, int *legalmoves);
 void printboard(int *board, int *legalmoves);
 void emptyboard(int *board);
@@ -132,27 +174,22 @@ void defaultboard(int *board);
 int loadboard(char *fname, int *board);
 void printscore(int *board);
 
-/** Use alarm interrupts and longjmps to return from negamax */
-void timeout(int sig) {
-	sigprocmask(SIG_UNBLOCK,&mask,NULL);
-	signal(SIGALRM,timeout);
-	longjmp(jbuf,1);
-}
-
 main() {
 	int board[ARRSIZE];
 	int i, move, movenum;
 	int playermode;
 	int legalmoves[MAXMOVES];
 	int iscomputer[2];
-	char c;
-	char fname[1025];
+	char c, fname[1025], str[1025];
+	char *endptr;
+	
 	
 	srand(time(NULL));
 	
 	///////////////////
 	// Starting menu //
 	///////////////////
+	startmenu:
 	printf("Welcome to Othello!\n\n");
 	printf(	"Player configuration:\n"
 			" 1. Human vs Human\n"
@@ -173,30 +210,13 @@ main() {
 	if (iscomputer[0] || iscomputer[1]) {
 		do {
 			printf("Specify a time limit in seconds (1-60): ");
-			if (!scanf("%2d",&i))
+			if (!scanf("%d",&i))
 				while(getchar()!='\n');
 		}
 		while (i<1 || i>60);
 		printf("The time limit for each of the computer's moves will be %d seconds.\n\n",i);
 		
 		timelimit = ((double) i) - 0.01;
-		
-		/*
-		timer.it_interval.tv_sec = timer.it_interval.tv_usec =0 ;
-		timer.it_value.tv_sec = i-1;
-		timer.it_value.tv_usec = 955000;
-		
-		signal(SIGALRM,timeout);
-		sigemptyset(&mask);
-		sigaddset(&mask,SIGALRM); */
-		
-		//sigprocmask(SIG_BLOCK,&mask,NULL); // DEBUG?
-		/*act.sa_handler = timeout;
-		act.sa_flags = 0;
-		sigemptyset(&act.sa_mask);
-		sigaction(SIGALRM, &act, NULL);
-		
-		sigprocmask(SIG_BLOCK,&mask,NULL);*/
 	}
 	while(getchar()!='\n');
 	
@@ -207,7 +227,7 @@ main() {
 	}
 	while(c!='y' && c!='n');
 	
-	if (c=='y') {
+	if (c=='y') { // Load board from file
 		do {
 			printf("Specify the name of the file: ");
 			scanf("%1024s",&fname); 
@@ -221,7 +241,7 @@ main() {
 		}
 		while(i < 1 || i > 2);
 		
-		TURN(board) = i-1;
+		TURN(board) = (i==1)?PLAYER1:PLAYER2;
 	}
 	else
 		defaultboard(board);
@@ -235,29 +255,19 @@ main() {
 		getmoves(board,legalmoves);
 		printboard(board,legalmoves);
 		if (legalmoves[1] != -1) { // At least one legal move exists
-			if (!iscomputer[TURN(board)]) {
-				do {
-					printf("Type the number of the move you wish to make ");
-					if (legalmoves[0] == 1)
-						printf("(1): ");
-					else
-						printf("(1-%d): ",legalmoves[0]);
-						
-					if (!scanf("%d",&movenum))
-						while(getchar()!='\n');
-				}
-				while(movenum > legalmoves[0] || movenum <= 0);
-			}
-			else // If player is computer-controlled
+			if (!iscomputer[ GETPLAYER(TURN(board))-1 ])
+				movenum = getplayermove(legalmoves);
+			else	// If player is computer-controlled
 				movenum = decidemove(board);
-
 			move = legalmoves[movenum];
-			printf("-----\nMove #%d (%c%d) was made by P%d.\n\n",movenum,'A'+(move-10)%9, (move-10)/9+1, TURN(board)+1);
+
+			printf("-----\nMove #%d (%c%d) was made by P%d.\n\n",movenum,'A'+(move-A1)%9, (move-A1)/9+1, GETPLAYER(TURN(board)));
+			printf("That's (%d,%d)\n",(move-A1)/9,(move-A1)%9);//DEBUG
 			results(board,move);
 		}
 		else {
-			printf("-----\nP%d had no legal moves.\n",TURN(board)+1);
-			TURN(board) = !TURN(board);
+			printf("-----\nP%d had no legal moves.\n",GETPLAYER(TURN(board)));
+			TURN(board) = -TURN(board);
 		}
 		
 		if (terminaltest(board)) {
@@ -265,66 +275,138 @@ main() {
 			printboard(board,legalmoves);
 			printf("\nGame finished! ");
 			if (P1PIECES(board) > ACTIVEPIECES(board)-P1PIECES(board))
-				printf("P1 (%s%c%s) wins!",COL_PLAYER1,CHR_PLAYER1,COL_EMPTY);
+				printf("P1 (%s%c%s) wins!\n",COL_PLAYER1,CHR_PLAYER1,COL_EMPTY);
 			else if (P1PIECES(board) < ACTIVEPIECES(board)-P1PIECES(board))
-				printf("P2 (%s%c%s) wins!",COL_PLAYER2,CHR_PLAYER2,COL_EMPTY);
+				printf("P2 (%s%c%s) wins!\n",COL_PLAYER2,CHR_PLAYER2,COL_EMPTY);
 			else 
-				printf("Tied game!");
-			exit(0);
+				printf("Tied game!\n");
+			
+			printf("-----\nReturning to the title screen.\n-----\n");
+			goto startmenu;
 		}
 	}
+}
+
+int getplayermove(int *legalmoves) {
+	int i, move, movenum;
+	char str[1025], *endptr;
+	do {
+		printf("Type the number of the move you wish to make ");
+		if (legalmoves[0] == 1)
+			printf("(1): ");
+		else
+			printf("(1-%d): ",legalmoves[0]);
+		
+		scanf("%1024s",&str);
+		movenum = strtol(str,&endptr,10);
+		
+		/* If strtol() can't convert to a number, check if the 
+			move is expressed in the form A1, A2, A3, etc.  */
+		if (!movenum) {
+			if (tolower(str[0]) >= 'a' && tolower(str[0]) <= 'h' 
+					&& str[1] >= '1' && str[1] <= '8') 
+			{
+				move = COORD(tolower(str[0])-'a',str[1]-'1');
+				
+				// Check that the move is a valid one.
+				for (i=1; i<=legalmoves[0]; i++) {
+					if (legalmoves[i] == move)
+						return i;
+				}
+			}
+		}
+		else if (*endptr == '\0')
+			return movenum;
+		else // Invalid input
+			movenum = 0;
+	}
+	while(movenum > legalmoves[0] || movenum <= 0);
 }
 
 int decidemove(int *board) {
 	int player = TURN(board);
 	int depth, movenum, tmp;
+	int legalmoves[MAXMOVES];
 	
-	if (!player) { // Player 1 chooses randomly
-		int legalmoves[MAXMOVES];
+	/*
+	if (player==PLAYER2) { // Player 2 chooses randomly
 		getmoves(board,legalmoves);
 		movenum = rand()%legalmoves[0]+1;
 		return movenum;
-	}
+	}*/
 	
-	starttime = clock();
+	//starttime = clock();
+	
+	gettimeofday(&starttimeval,NULL);
+	starttime = starttimeval.tv_sec+(starttimeval.tv_usec/1000000.0);
+	
+	getmoves(board,legalmoves);
+	if (legalmoves[0] == 1) {
+		printf("Not evaluating the game tree: only one legal move.\n");
+		return 1;
+	}
 	
 	for (depth=1;;depth++) {
 		tmp = negamax(depth, depth, board, -INF, INF);
 		
 		if (tmp>0)
 			movenum = tmp;
-		else // Out of time, use movenum from previous iteration
+		else if (tmp==0) { // Out of time, use movenum from previous iteration
+			printf("Completed search to depth %d.\nTime ran out ",depth-1);
 			break;
+		}
+		else { // Reached end of game tree in search
+			printf("Reached end of game tree ");
+			movenum = -tmp;
+			break;
+		}
 	}
 	
-	endtime = clock();
-	printf("Time ran out on depth %d (%f seconds elapsed).\n",depth-1,((double)(endtime-starttime))/CLOCKS_PER_SEC);
+	//endtime = clock();
+	gettimeofday(&endtimeval,NULL);
+	endtime = endtimeval.tv_sec+(endtimeval.tv_usec/1000000.0);
+	
+	printf("at depth %d (%.4f seconds elapsed).\n",depth,endtime-starttime);
 	
 	return movenum;
 }
 
 int negamax(int d, int maxd, int *board, int alpha, int beta) {
 	int legalmoves[MAXMOVES];
-	int player = TURN(board);
 	int indexbest = 1;
-	int i, val, best;
+	int i, val, best, n;
 
-	if (((double)(clock()-starttime))/CLOCKS_PER_SEC > timelimit)
-		return -1;
+	gettimeofday(&endtimeval,NULL);
+	endtime = endtimeval.tv_sec+(endtimeval.tv_usec/1000000.0);
 	
-	if (!d || terminaltest(board)) 
-		return (player?-1:1)*evaluation(board);
-	
-	getmoves(board,legalmoves);
-	if (d == maxd && legalmoves[0] == 1)
-		return 1;	// If only one legal move, choose that move.
+	if (endtime-starttime > timelimit)
+		return 0;
+		
+	if (d != maxd && terminaltest(board)) {
+		if ((val = TURN(board)*evaluation(board)) > 0)
+			return END+val;
+		else if (val < 0)
+			return val-END;
+		else
+			return 0;
+	}
+	if (!d) // Reached depth cutoff
+		return TURN(board)*evaluation(board);
 	
 	best = -INF;
+	getmoves(board,legalmoves);
+	n = legalmoves[0];
 	int tmpboard[ARRSIZE];
 	for (i=1; i<=legalmoves[0]; i++) {
 		memcpy(tmpboard, board, sizeof tmpboard);
 		results(tmpboard, legalmoves[i]);
-		val = -negamax(d-1,d,tmpboard,-alpha,-beta);
+		
+		//printf("Calling negamax at depth %d, move %d (%d) - on P%d's turn\n",maxd-d+1,i,legalmoves[i],GETPLAYER(TURN(board)));
+		val = -negamax(d-1,maxd,tmpboard,-alpha,-beta);
+		//printf("Returned from negamax at depth %d, move %d (%d) gives val %d - on P%d's turn\n",maxd-d+1,i,legalmoves[i],val,GETPLAYER(TURN(board)));
+		
+		if (val <= -END || val >= END)
+			n--;
 		
 		if (val>best) {
 			best = val;
@@ -333,67 +415,28 @@ int negamax(int d, int maxd, int *board, int alpha, int beta) {
 		else if (val == best && rand() <= RAND_MAX/i)
 			indexbest = i;
 			
-		if (best>=beta) {
+		if (best>beta) {
 			if (d == maxd)
-				return indexbest;
+				break;
 			else
 				return best+1;
 		}
 			
 		if (best>alpha)
 			alpha = best;
+			
+		//printf("Current best: move %d with val %d\n",indexbest,best);
 	}
 	
-	if (d == maxd)
-		return indexbest;
+	if (d == maxd) {
+		if (n<=0)
+			return -indexbest;
+		else
+			return indexbest;
+	}
 	else
 		return best;
 }
-
-/*
-int negamax(int d, int maxd, int *board, int alpha, int beta) {
-	int legalmoves[MAXMOVES];
-	int player = TURN(board);
-	int indexbest = 1;
-	int i, val;
-
-	if (((double)(clock()-starttime))/CLOCKS_PER_SEC > timelimit)
-		return -1;
-	
-	if (!d || terminaltest(board)) 
-		return (player?-1:1)*evaluation(board);
-	
-	getmoves(board,legalmoves);
-	if (d == maxd && legalmoves[0] == 1)
-		return 1;	// If only one legal move, choose that move.
-	
-	int tmpboard[ARRSIZE];
-	for (i=1; i<=legalmoves[0]; i++) {
-		memcpy(tmpboard, board, sizeof tmpboard);
-		
-		results(tmpboard, legalmoves[i]);
-		val = -negamax(d-1, maxd, tmpboard, -alpha, -beta);
-		
-		if (val > alpha) {
-			alpha = val;
-			indexbest = i;
-		}
-		else if (val == alpha && rand() <= RAND_MAX/i) // Tied moves
-			indexbest = i;
-			
-		if (alpha >= beta) { 
-			if (d == maxd) // ADDED THIS. Not so sure.
-				return indexbest;
-			else
-				return alpha;
-		}
-	}
-	
-	if (d == maxd)
-		return indexbest;
-	else
-		return alpha;
-}*/
 
 int terminaltest(int *board) {
 	int legalmoves[MAXMOVES];
@@ -401,9 +444,9 @@ int terminaltest(int *board) {
 	if (legalmoves[1] != -1)
 		return 0;	// Current player has at least one legal move
 	
-	TURN(board) = !TURN(board);
+	TURN(board) = -TURN(board);
 	getmoves(board,legalmoves);
-	TURN(board) = !TURN(board);
+	TURN(board) = -TURN(board);
 	if (legalmoves[1] != -1)
 		return 0;	// Other player has at least one legal move
 	else
@@ -414,7 +457,7 @@ void results(int *board, int move) {
 	int player = TURN(board);
 	int j, n, count, pos;
 	if (move == -1) { // No legal moves
-		TURN(board) = !player;
+		TURN(board) = -player;
 		return;
 	}
 	
@@ -423,10 +466,10 @@ void results(int *board, int move) {
 	ACTIVEPIECES(board)++;
 	for (j=0; j<8; j++) { // Check each direction
 		if (flipdir[pos = move] & (1<<j)) {
-			for (n=0, pos+=dirs[j]; board[pos]==!player; n++, pos+=dirs[j]); 
+			for (n=0, pos+=dirs[j]; board[pos]==-player; n++, pos+=dirs[j]); 
 			if (n>0 && board[pos]==player) {
 				count += n;
-				for (pos-=dirs[j]; board[pos]==!player; pos-=dirs[j])
+				for (pos-=dirs[j]; board[pos]==-player; pos-=dirs[j])
 					board[pos] = player;
 			}
 		}
@@ -436,62 +479,225 @@ void results(int *board, int move) {
 		P1PIECES(board) += count+1;
 	else
 		P1PIECES(board) -= count;
-	
-	TURN(board) = !player;
+		
+	JUSTPLAYED(board) = pos;
+	TURN(board) = -player;
 	return;
 }
 
+#define STAGE1 14
+#define STAGE2 36
+#define STAGE3 54
 int evaluation(int *board) {
-	int i, sign=1, val=0; 
+	int val=0; 
 	
-	for (i=0; i<2; i++,sign=-1) {
-		if (ACTIVEPIECES(board) < 48) {
-			//val += sign*h_score(board);
-			val += sign*5*h_mobility(board);
-			val += sign*10*h_corners(board);
-		}
-		else {
-			val += sign*h_mobility(board);
-			val += sign*5*h_corners(board);
-			val += sign*30*h_score(board);
-		}
-		TURN(board) = !TURN(board);
+	if (ACTIVEPIECES(board) < STAGE1) {
+		val -= h_discdiff(board);
+		val += 10*h_mobility(board);
+		val += 3*h_pmobility(board);
+		val += 2*h_disksquare(board);
+		val += 15*h_stability(board);
+	}
+	else if (ACTIVEPIECES(board) < STAGE2) {
+		val -= h_discdiff(board);
+		val += 8*h_mobility(board);
+		val += 2*h_pmobility(board);
+		val += 15*h_stability(board);
+	}
+	else if (ACTIVEPIECES(board) < STAGE3) {
+		val += 5*h_mobility(board);
+		val += h_pmobility(board);
+		val += 15*h_stability(board);
+	}
+	else {
+		val += h_discdiff(board);
 	}
 	
 	return val;
 }
 
-int h_score(int *board) {
-	if (TURN(board)) // Player 2
-		return ACTIVEPIECES(board)-P1PIECES(board);
-	else	// Player 1
-		return P1PIECES(board);
+int h_parity(int *board) {
+	
+}
+
+int h_discdiff(int *board) {
+	return 2*P1PIECES(board)-ACTIVEPIECES(board);
 }
 
 int h_mobility(int *board) {
 	int legalmoves[MAXMOVES];
+	int val=0;
 	
+	// Mobility of player whose turn it is
 	getmoves(board,legalmoves);
-	if (legalmoves[1] != -1)
-		return legalmoves[0];
-	else // Avoid having no legal moves
-		return -25;
+	if (legalmoves[0]>1)
+		val += TURN(board)*legalmoves[0];
+	else
+		val -= TURN(board)*20;
+	TURN(board) = -TURN(board);
+	
+	// Mobility of other player
+	getmoves(board,legalmoves);
+	if (legalmoves[0]>1)
+		val += TURN(board)*legalmoves[0];
+	else
+		val -= TURN(board)*20;
+	TURN(board) = -TURN(board);
+	
+	return val;
 }
 
-int h_corners(int *board) {
-	int i, player = TURN(board), val=0;
-	
-	for (i=0;i<4;i++) {
-		if (board[positions[4+i]] == player)
-			val+=15; // Corners
-		else if (board[positions[4+i]] == EMPTY)
-			if (board[positions[63-i]] == player) // X-squares
-				val -= 10;
-			if (board[positions[59-i]] == player) // C-squares
-				val -= 5;
-			if (board[positions[59-2*i]] == player)
-				val -= 5;
+int h_pmobility(int *board) {
+	int i, j, val=0;
+	for (i=10; i<81; i++) {
+		if (board[i] == EMPTY || board[i] == INVALID)
+			continue;
+		
+		for (j=0; j<8; j++) { // Check each direction
+			//if (flipdir[i] & (1<<j) && board[i+dirs[j]] == EMPTY)
+			if (board[i+dirs[j]] == EMPTY)
+				val-=board[i];
 		}
+	}
+	
+	return val;
+}
+
+int h_disksquare(int *board) {
+	int i, val=0;
+	
+	/* If corner squares are owned, owning the corresponding
+		X- and C- squares is actually beneficial. 
+	val += board[10]*(CV*(board[11]+board[19])+XV*board[20]);
+	val += board[17]*(CV*(board[16]+board[26])+XV*board[25]);
+	val += board[73]*(CV*(board[64]+board[74])+XV*board[65]);
+	val += board[80]*(CV*(board[71]+board[79])+XV*board[70]);
+	val *= 2;*/
+	
+	for (i=10; i<81; i++)
+		val += board[i]*disksquare[i];
+	
+	return val;
+}
+
+/*
+int h_parity(int*board) {
+	if (ACTIVEPIECES(board) && TURN(board)==PLAYER1)
+		;
+}*/
+
+int h_stability(int *board) {
+	int val=0, i, j, col, stop;
+	
+	// Top left corner
+	if (board[A1]) {
+		stop = 8;
+		for (j=0; j<8; j++) {
+			for (i=10+j*9, col=0; board[i]==board[10] && col<stop; i++, col++)
+				val+=board[10];
+			if (col==0)
+				break;
+			if (col==1)
+				stop = 1;
+			else
+				stop = col-1;
+		}
+	}
+	
+	// Top right corner
+	if (board[A8]) {
+		stop = 8;
+		for (j=0; j<8; j++) {
+			for (i=10+j*9+7, col=0; board[i]==board[17] && col<stop; i--, col++)
+				val+=board[17];
+			if (col==0)
+				break;
+			if (col==1)
+				stop = 1;
+			else
+				stop = col-1;
+		}
+	}
+	
+	// Bottom left corner
+	if (board[H1]) {
+		stop = 8;
+		for (j=7; j>=0; j--) {
+			for (i=10+j*9, col=0; board[i]==board[73] && col<stop; i++, col++)
+				val+=board[73];
+			if (col==0)
+				break;
+			if (col==1)
+				stop = 1;
+			else
+				stop = col-1;
+		}
+	}
+	
+	// Bottom right corner
+	if (board[H8]) {
+		stop = 8;
+		for (j=7; j>=0; j--) {
+			for (i=10+j*9+7, col=0; board[i]==board[80] && col<stop; i--, col++)
+				val+=board[80];
+			if (col==0)
+				break;
+			if (col==1)
+				stop = 1;
+			else
+				stop = col-1;
+		}
+	}
+	
+	return val;
+}
+
+// DEBUG: REMOVE THIS. UNUSED.
+#define NEXTROW(x) (x+=9)
+int h_straightlines(int *board) {
+	int val, pos, count, i;
+	int player = TURN(board);
+	
+	// Vertical lines
+	for (pos=10; pos<18; pos++) {
+		count = 0;
+		for (i=pos; board[i]==player; NEXTROW(i),count++);
+		if (i==pos)
+			for (NEXTROW(i); board[i]==player; NEXTROW(i),count++);
+		if (count >= 7) {
+			if (i==pos || i==pos+63)
+				if (count==8)
+					val+=15;
+				else
+					val+=5;
+			else if (i==pos+9 || i==pos+54)
+				val+=3;
+			else
+				val+=2;
+		}
+		if (count == 8)
+			val++;
+	}
+	
+	// Horizontal lines
+	for (pos=10; pos<82; NEXTROW(pos)) {
+		count = 0;
+		for (i=pos; board[i]==player; i++,count++);
+		if (i==pos)
+			for (i++; board[i]==player; i++,count++);
+		if (count >= 7) {
+			if (i==pos || i==pos+7)
+				if (count==8)
+					val+=15;
+				else
+					val+=5;
+			else if (i==pos+1 || i==pos+6)
+				val+=3;
+			else
+				val+=2;
+		}
+		if (count == 8)
+			val++;
 	}
 	
 	return val;
@@ -508,7 +714,7 @@ void getmoves(int *board, int *legalmoves) {
 		for (j=0; j<8; j++) { // Check each direction
 			pos = positions[i];
 			if (flipdir[pos] & (1<<j)) {
-				for (count=0, pos+=dirs[j]; board[pos]==!player; count++, pos+=dirs[j]);
+				for (count=0, pos+=dirs[j]; board[pos]==-player; count++, pos+=dirs[j]);
 				if (count!=0 && board[pos]==player) {
 					legalmoves[nummoves++] = positions[i];
 					break;
@@ -598,8 +804,10 @@ void printboard(int *board, int *legalmoves) {
 		printf("  None");
 	
 	printf("\033[u\n"); */
+	printf("Evaluation of this board: %d\n",player*evaluation(board)); // DEBUG!!
+	
 	if (!terminaltest(board))
-		printf("P%d (%s%c%s)'s turn. ",player+1,player==PLAYER1?COL_PLAYER1:COL_PLAYER2,player==PLAYER1?CHR_PLAYER1:CHR_PLAYER2,COL_EMPTY);
+		printf("P%d (%s%c%s)'s turn. ",GETPLAYER(player),player==PLAYER1?COL_PLAYER1:COL_PLAYER2,player==PLAYER1?CHR_PLAYER1:CHR_PLAYER2,COL_EMPTY);
 	printscore(board);
 }
 
